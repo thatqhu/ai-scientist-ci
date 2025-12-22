@@ -48,6 +48,77 @@ The system supports both **Asynchronous (Event-Driven)** and **Synchronous** exe
 └── uv.lock                 # Dependency lock file
 ```
 
+## Event Flow (Architecture)
+
+The system uses an **Event-Driven Architecture (EDA)** with a `MessageBus` for asynchronous agent communication.
+
+### 1. Planning Phase
+*   **Trigger**: `Director` starts a new research cycle.
+*   **Action**:
+    1.  **Director** publishes `PLAN_REQUESTED`.
+    2.  **PlannerAgent** receives the request, queries the `WorldModel` for history/context, and uses LLM to generate new experiment configurations.
+    3.  **PlannerAgent** publishes `PLAN_PROPOSED`.
+
+### 2. Review Phase
+*   **Trigger**: `PLAN_PROPOSED` event.
+*   **Action**:
+    1.  **ReviewerAgent** validates the proposed plan (rule-based checks + LLM safety/strategy review).
+    2.  If **Approved**: Publishes `PLAN_APPROVED` with the valid configs.
+    3.  If **Rejected**: Publishes `PLAN_REJECTED` (Director may retry planning).
+
+### 3. Execution Phase
+*   **Trigger**: `PLAN_APPROVED` event.
+*   **Action**:
+    1.  **ExecutorAgent** submits experiments to the SCI Service (or runs them in Mock mode).
+    2.  Experiments run in parallel/async.
+    3.  As each experiment finishes, **ExecutorAgent** publishes `EXPERIMENT_COMPLETED`.
+
+### 4. Monitoring & Analysis Phase
+*   **Trigger**: `EXPERIMENT_COMPLETED` events.
+*   **Action**:
+    1.  **Director** tracks progress. When all planned experiments for the cycle are done, it publishes `ANALYSIS_REQUESTED`.
+    2.  **AnalysisAgent** analyzes the new results, identifying the Pareto Front and generating trends/insights using LLM.
+    3.  **AnalysisAgent** publishes `INSIGHT_GENERATED`.
+
+### 5. Decision Phase
+*   **Trigger**: `INSIGHT_GENERATED` event.
+*   **Action**:
+    1.  **Director** saves insights to the `WorldModel`.
+    2.  Checks budget and cycle limits.
+    3.  If resources remain, it triggers the **next cycle** (Go to Step 1).
+    4.  Otherwise, it terminates the loop.
+
+```mermaid
+sequenceDiagram
+    participant D as Director (AIScientist)
+    participant P as Planner
+    participant R as Reviewer
+    participant E as Executor
+    participant A as Analyzer
+
+    Note over D: Start Cycle
+    D->>P: PLAN_REQUESTED
+    P->>R: PLAN_PROPOSED
+    alt Plan Rejected
+        R-->>D: PLAN_REJECTED
+        D->>P: PLAN_REQUESTED (Retry)
+    else Plan Approved
+        R->>D: PLAN_APPROVED (Update Counters)
+        R->>E: PLAN_APPROVED
+    end
+
+    par Parallel Execution
+        E->>D: EXPERIMENT_COMPLETED (Exp 1)
+        E->>D: EXPERIMENT_COMPLETED (Exp 2)
+    end
+
+    Note over D: All Experiments Done?
+    D->>A: ANALYSIS_REQUESTED
+    A->>D: INSIGHT_GENERATED
+
+    Note over D: Check Trigger Next Cycle
+```
+
 ## Installation
 
 This project uses modern Python packaging. Ensure you have Python 3.9+ installed.
