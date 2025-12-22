@@ -14,14 +14,16 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from src.sci_scientist import (
+from src.core.scientist import (
     AIScientist,
     WorldModel,
     PlannerAgent,
     ExecutorAgent,
     AnalysisAgent,
+    PlanReviewerAgent,
+    MessageBus,
 )
-from src.sci_scientist.agents.planner import create_baseline_configs
+from src.agents.sci.planner import create_baseline_configs
 
 
 def load_config(config_path: str) -> dict:
@@ -80,18 +82,31 @@ def main():
     db_path = config.get('database', {}).get('path', 'world_model_v3.db')
 
     # Initialize components
+    bus = MessageBus()
     world_model = WorldModel(db_path)
-    planner = PlannerAgent(config.get('planner', {}), llm_config=llm_config)
+
+    planner = PlannerAgent(
+        config.get('planner', {}),
+        bus=bus,
+        world_model=world_model,
+        llm_config=llm_config
+    )
 
     # Executor config (merge with mock mode setting)
     executor_config = config.get('executor', {})
     executor_config['mock'] = mock_mode
-    executor = ExecutorAgent(executor_config)
+    executor = ExecutorAgent(executor_config, bus=bus)
 
-    analyzer = AnalysisAgent(llm_config)
+    analyzer = AnalysisAgent(llm_config, bus=bus, world_model=world_model)
+    reviewer = PlanReviewerAgent(
+        llm_client=planner.llm_client,
+        bus=bus,
+        design_space=design_space,
+        world_model=world_model
+    )
 
     ai_scientist = AIScientist(
-        world_model, planner, executor, analyzer, design_space, budget_max
+        world_model, planner, executor, analyzer, reviewer, bus, design_space, budget_max
     )
 
     # Run

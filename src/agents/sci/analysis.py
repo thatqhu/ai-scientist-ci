@@ -5,30 +5,67 @@ Uses LLM for intelligent Pareto verification, trend analysis, and experiment rec
 """
 
 import json
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 
 import numpy as np
 from loguru import logger
 
-from ..llm.client import LLMClient
-from ..models.world_model import WorldModel
+from ...llm.client import LLMClient
+from .world_model import WorldModel
 
-from ..agents.utils import Utils
+from ...agents.utils import Utils
 
 
-class AnalysisAgent:
-    """Analysis Agent - Uses LLM for intelligent analysis"""
+from ...core.bus import MessageBus, Event
+from ..base import BaseAgent
 
-    def __init__(self, llm_config: Dict[str, Any]):
+
+class AnalysisAgent(BaseAgent):
+    """Analysis Agent - Uses LLM for intelligent analysis (Event-Driven)"""
+
+    def __init__(self, llm_config: Dict[str, Any], bus: MessageBus, world_model: Optional[Any] = None):
         """
         Initialize analysis agent
 
         Args:
             llm_config: LLM configuration dictionary
+            bus: Message Bus
+            world_model: World Model instance
         """
+        super().__init__("AnalysisAgent", bus)
+
         self.llm_client = LLMClient(llm_config)
+        self.world_model = world_model
         self.objectives = ['psnr', 'ssim', 'latency']
         logger.info("Analysis Agent initialized with LLM")
+
+    def setup_subscriptions(self):
+        self.bus.subscribe("STATE_UPDATED", self._on_state_updated)
+
+    async def _on_state_updated(self, event: Event):
+        """Handle State Update event"""
+        logger.debug(f"Analysis agent received STATE_UPDATED: {event.payload}")
+        if event.payload.get('trigger_analysis', False):
+            cycle = event.payload.get('cycle', 1)
+            logger.info(f"Triggering analysis for cycle {cycle}...")
+            # Run analysis
+            await self.run_analysis(cycle)
+
+    async def run_analysis(self, cycle: int):
+        if not self.world_model:
+            return [], {}
+
+        logger.info(f"Running analysis for cycle {cycle}")
+        pareto_ids, insights = self.analyze(self.world_model, cycle)
+
+        # Publish completion event
+        await self.publish("INSIGHT_GENERATED", {
+            "insights": insights,
+            "pareto_ids": pareto_ids,
+            "cycle": cycle
+        })
+
+        return pareto_ids, insights
 
     def analyze(
         self,

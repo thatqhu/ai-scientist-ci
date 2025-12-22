@@ -43,8 +43,8 @@ design_space:
 
 # Experiment Settings
 experiment:
-  budget_max: 20
-  max_cycles: 5
+  budget_max: 3
+  max_cycles: 1
   mock_mode: false
 
 # Planner Settings

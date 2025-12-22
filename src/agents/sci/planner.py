@@ -15,7 +15,7 @@ from enum import Enum
 
 from loguru import logger
 
-from ..core.data_structures import (
+from .structures import (
     SCIConfiguration,
     ForwardConfig,
     ReconParams,
@@ -23,8 +23,8 @@ from ..core.data_structures import (
     ReconFamily,
     UQScheme,
 )
-from ..llm.client import LLMClient
-from ..agents.utils import Utils
+from ...llm.client import LLMClient
+from ...agents.utils import Utils
 
 
 class ConfigHasher:
@@ -104,20 +104,33 @@ class ConfigHasher:
         return hashlib.sha256(json_str.encode()).hexdigest()[:16]
 
 
-class PlannerAgent:
-    """LLM-driven experiment planning agent with deduplication"""
+from ...core.bus import MessageBus, Event
+from ..base import BaseAgent
 
-    def __init__(self, config: Dict[str, Any], llm_config: Optional[Dict[str, Any]] = None):
+
+class PlannerAgent(BaseAgent):
+    """LLM-driven experiment planning agent with deduplication (Event-Driven)"""
+
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        bus: MessageBus,
+        world_model: Optional[Any] = None,
+        llm_config: Optional[Dict[str, Any]] = None
+    ):
         """
         Initialize planner agent
 
         Args:
-            config: Configuration dictionary containing:
-                - max_configs_per_cycle: Maximum configs per cycle
-                - use_llm: Whether to use LLM for planning (default True)
-            llm_config: LLM configuration dictionary (optional)
+            config: Configuration dictionary
+            bus: Message Bus
+            world_model: World Model instance (for context pulling)
+            llm_config: LLM configuration
         """
+        super().__init__("PlannerAgent", bus)
+
         self.config = config
+        self.world_model = world_model
         self.max_configs_per_cycle = config.get("max_configs_per_cycle", 3)
         self.use_llm = config.get("use_llm", True) and llm_config is not None
         self.max_dedup_retries = config.get("max_dedup_retries", 5)
@@ -135,6 +148,37 @@ class PlannerAgent:
         self.existing_hashes: Set[str] = set()
 
         logger.info(f"Planner Agent initialized (max {self.max_configs_per_cycle} per cycle, LLM={self.use_llm})")
+
+    def setup_subscriptions(self):
+        """Register subscriptions"""
+        self.bus.subscribe("PLAN_REQUESTED", self._on_plan_requested)
+
+    async def _on_plan_requested(self, event: Event):
+        """Handle plan request"""
+        logger.info("Received PLAN_REQUESTED signal")
+
+        budget = event.payload.get('budget', 3)
+        design_space = event.payload.get('design_space', {})
+
+        if not self.world_model:
+            logger.error("Planner has no WorldModel reference, cannot plan!")
+            return
+
+        # Pull context from WorldModel
+        summary = self.world_model.summarize()
+        existing_experiments = self.world_model.get_all_experiments()
+
+        # Plan
+        configs = self.plan_experiments(
+            summary,
+            design_space,
+            budget,
+            existing_experiments,
+            self.world_model
+        )
+
+        # Publish
+        await self.publish("PLAN_PROPOSED", {"configs": configs})
 
     def set_existing_configs(self, experiments: List[Any]):
         """

@@ -14,7 +14,7 @@ from enum import Enum
 
 from loguru import logger
 
-from ..core.data_structures import ExperimentResult
+from .structures import ExperimentResult
 
 
 class EnumEncoder(json.JSONEncoder):

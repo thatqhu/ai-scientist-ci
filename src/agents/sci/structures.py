@@ -131,3 +131,12 @@ class ExperimentResult:
     api_task_id: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+
+@dataclass
+class ReviewResult:
+    """Result of plan review"""
+    approved: bool
+    approved_configs: List[SCIConfiguration]
+    feedback: str
+    critique: Dict[str, str]  # Map experiment_id to specific critique
