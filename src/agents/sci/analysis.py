@@ -72,13 +72,13 @@ class AnalysisAgent(BaseAgent):
         cycle_number: int
     ) -> Tuple[List[str], Dict[str, Any]]:
         """
-        Complete analysis workflow
+        Complete analysis workflow (Algorithm 5 Implementation)
 
-        Args:
-            cycle_number: Current cycle number
-
-        Returns:
-            Tuple[List[str], Dict]: Pareto front IDs and insights payload
+        1. Group valid experiments by strata (T, mask, family)
+        2. Compute Pareto front per stratum
+        3. Compute statistics per stratum
+        4. Synthesize trends
+        5. Verify and Recommend via LLM using stratified insights
         """
         exp_count = self.world_model.count_experiments()
 
@@ -86,40 +86,94 @@ class AnalysisAgent(BaseAgent):
             logger.warning(f"Too few experiments: {exp_count}")
             return [], {"message": "Insufficient data"}
 
-        logger.info(f"Analyzing {exp_count} experiments")
+        logger.info(f"Analyzing {exp_count} experiments (Stratified)")
 
-        # Step 1: Compute Pareto front
-        pareto_ids = self._compute_pareto_front()
-        logger.info(f"Pareto front: {len(pareto_ids)} experiments")
+        # Stratification Keys
+        # T (Compression Ratio), Mask Type, Recon Family
+        strata_keys = [
+            '$.forward_config.compression_ratio',
+            '$.forward_config.mask_type',
+            '$.recon_family'
+        ]
+
+        # Step 1 & 2: Group by Strata & Compute Per-Stratum Data
+        strata_groups = self.world_model.get_unique_strata(strata_keys)
+
+        global_pareto_ids = set()
+        strata_trends = []
+
+        objectives = [('psnr', 'max'), ('ssim', 'max'), ('latency', 'min')]
+
+        for group in strata_groups:
+            # Unpack group (val1, val2, val3, count)
+            # Note: values might be None if key missing
+            t_val, mask_val, family_val, count = group
+
+            # Skip invalid/empty strata if any essential key is missing (optional)
+            if count < 1:
+                continue
+
+            # Build filters
+            filters = {}
+            if t_val is not None: filters['$.forward_config.compression_ratio'] = t_val
+            if mask_val is not None: filters['$.forward_config.mask_type'] = mask_val
+            if family_val is not None: filters['$.recon_family'] = family_val
+
+            stratum_name = f"CR={t_val}, Mask={mask_val}, Family={family_val}"
+
+            # Compute Pareto Front for this stratum
+            p_s = self.world_model.find_pareto_frontier_ids_with_filters(objectives, filters)
+            global_pareto_ids.update(p_s)
+
+            # Compute Stats
+            calib_stats = self.world_model.get_metrics_statistics(filters)
+
+            # Summarize Trend (Lightweight)
+            # We aggregate these to pass to LLM, instead of running LLM on every stratum
+            t_s = {
+                "stratum": stratum_name,
+                "count": count,
+                "pareto_count": len(p_s),
+                "psnr_avg": calib_stats['psnr']['avg'],
+                "psnr_max": calib_stats['psnr']['max'],
+                "latency_avg": calib_stats['latency']['avg'],
+                "params": filters
+            }
+            strata_trends.append(t_s)
+
+        pareto_ids = list(global_pareto_ids)
+        logger.info(f"Global Union Pareto front: {len(pareto_ids)} experiments")
+
+        # Use Stratified Trends to inform Global LLM Analysis
+        # We replace the generic 'summarize()' call in LLM methods with finding specific patterns
 
         analysis_records = []
 
-        # Step 2: LLM verification
+        # Step 3: LLM Trend Analysis (Enhanced with Strata)
+        trends, meta_trends = self._llm_analyze_trends(
+            pareto_ids, cycle_number, strata_trends
+        )
+        if meta_trends:
+            analysis_records.append(meta_trends)
+
+        # Step 4: Verification (using Global Pareto)
         verification, meta_ver = self._llm_verify_pareto(
             pareto_ids, cycle_number
         )
         if meta_ver:
             analysis_records.append(meta_ver)
 
-        # Step 3: LLM trend analysis
-        trends, meta_trends = self._llm_analyze_trends(
-            pareto_ids, cycle_number
-        )
-        if meta_trends:
-            analysis_records.append(meta_trends)
-
-        # Step 4: LLM generate recommendations
+        # Step 5: Recommendations
         recommendations, meta_recs = self._llm_generate_recommendations(
             trends, cycle_number
         )
         if meta_recs:
             analysis_records.append(meta_recs)
 
-        # Construct complete insights payload object to be passed to Director
         insights = {
             'pareto_front_ids': pareto_ids,
+            'strata_trends': strata_trends,
             'llm_analyses': analysis_records,
-            # Keeping these for easy access if needed by other components
             'verification': verification,
             'trends': trends,
             'recommendations': recommendations,
@@ -231,7 +285,8 @@ Return JSON format:
     def _llm_analyze_trends(
         self,
         pareto_ids: List[str],
-        cycle: int
+        cycle: int,
+        strata_trends: Optional[List[Dict[str, Any]]] = None
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         """
         LLM trend analysis
@@ -239,6 +294,22 @@ Return JSON format:
         """
         summary = self.world_model.summarize()
         psnr_stats = summary['psnr_stats']
+
+        # Prepare context
+        strata_text = ""
+        if strata_trends:
+            # Sort by max PSNR
+            sorted_strata = sorted(strata_trends, key=lambda x: x.get('psnr_max', 0), reverse=True)
+            top_strata = sorted_strata[:5]
+
+            lines = ["Performance by Stratum (Top 5):"]
+            for s in top_strata:
+                lines.append(
+                    f"- {s['stratum']}: Max PSNR={s['psnr_max']:.2f}, "
+                    f"Pareto Count={s['pareto_count']}/{s['count']}"
+                )
+            strata_text = "\n".join(lines)
+
         best_exp = self.world_model.get_best_experiment('psnr')
 
         prompt = f"""You are a data analysis expert. Please analyze experiment trends.
@@ -247,9 +318,11 @@ Total experiments: {summary['total_experiments']}
 PSNR range: {psnr_stats['min']:.2f} - {psnr_stats['max']:.2f} dB
 Best experiment: PSNR={best_exp.metrics.psnr:.2f}, SSIM={best_exp.metrics.ssim:.4f}
 
+{strata_text}
+
 Please analyze:
 1. Key findings (main factors affecting performance)
-2. Best configuration patterns
+2. Best configuration patterns based on strata
 3. Performance bottlenecks
 4. Unexpected insights
 

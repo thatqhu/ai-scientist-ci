@@ -404,6 +404,17 @@ class WorldModel(WorldModelBase):
         Returns:
             List of experiment IDs on the Pareto frontier.
         """
+        return self.find_pareto_frontier_ids_with_filters(objectives, filters=None)
+
+    def find_pareto_frontier_ids_with_filters(
+        self,
+        objectives: Optional[List[Tuple[str, str]]] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """
+        Find Pareto optimal experiment IDs using SQL directly (Computation Push-down),
+        optionally filtered by configuration.
+        """
         if objectives is None:
             objectives = [('psnr', 'max'), ('ssim', 'max')]
 
@@ -429,6 +440,17 @@ class WorldModel(WorldModelBase):
                 better_or_equal_clauses.append(f"t2.{metric} <= t1.{metric}")
                 strict_better_clauses.append(f"t2.{metric} < t1.{metric}")
 
+        # Build filter clause
+        filter_clause = ""
+        params = []
+        if filters:
+            conditions = []
+            for path, val in filters.items():
+                conditions.append(f"json_extract(e.config_json, '{path}') = ?")
+                params.append(val)
+            if conditions:
+                filter_clause = "AND " + " AND ".join(conditions)
+
         where_better_or_equal = " AND ".join(better_or_equal_clauses)
         where_strict_better = " OR ".join(strict_better_clauses)
 
@@ -438,17 +460,23 @@ class WorldModel(WorldModelBase):
         query = f"""
             SELECT t1.experiment_id
             FROM metrics t1
-            WHERE NOT EXISTS (
+            JOIN experiments e ON t1.experiment_id = e.experiment_id
+            WHERE e.status = 'success' {filter_clause}
+            AND NOT EXISTS (
                 SELECT 1
                 FROM metrics t2
+                JOIN experiments e2 ON t2.experiment_id = e2.experiment_id
                 WHERE {domination_condition}
+                AND e2.status = 'success'
+                {filter_clause.replace('e.config_json', 'e2.config_json')}
             )
         """
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
-            cursor.execute(query)
+            # We need params twice: once for outer query, once for inner query
+            cursor.execute(query, params + params)
             return [row[0] for row in cursor.fetchall()]
         finally:
             conn.close()
@@ -598,6 +626,83 @@ class WorldModel(WorldModelBase):
         conn.close()
         return results
 
+    def get_unique_strata(self, json_paths: List[str]) -> List[Tuple]:
+        """
+        Get unique combinations of configuration values (strata).
+
+        Args:
+            json_paths: List of JSON paths to group by (e.g. ['$.forward_config.compression_ratio'])
+
+        Returns:
+            List of tuples (value1, value2, ..., count)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Build extract clause
+        extracts = [f"json_extract(config_json, '{path}')" for path in json_paths]
+        extract_clause = ", ".join(extracts)
+
+        query = f"""
+            SELECT {extract_clause}, COUNT(*)
+            FROM experiments
+            WHERE status = 'success'
+            GROUP BY {extract_clause}
+            HAVING COUNT(*) > 0
+        """
+
+        try:
+            cursor.execute(query)
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def get_metrics_statistics(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Get statistics for metrics, optionally filtered by configuration values.
+
+        Args:
+            filters: Dict mapping JSON paths to values for filtering.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        where_clause = "status='success'"
+        params = []
+
+        if filters:
+            for path, val in filters.items():
+                where_clause += f" AND json_extract(config_json, '{path}') = ?"
+                params.append(val)
+
+        query = f"""
+            SELECT COUNT(*),
+                   AVG(psnr), MAX(psnr), MIN(psnr),
+                   AVG(ssim), MAX(ssim), MIN(ssim),
+                   AVG(latency), MAX(latency), MIN(latency)
+            FROM metrics m
+            JOIN experiments e ON m.experiment_id = e.experiment_id
+            WHERE {where_clause}
+        """
+
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or row[0] == 0:
+            return {
+                "count": 0,
+                "psnr": {"avg": 0, "max": 0, "min": 0},
+                "ssim": {"avg": 0, "max": 0, "min": 0},
+                "latency": {"avg": 0, "max": 0, "min": 0}
+            }
+
+        return {
+            "count": row[0],
+            "psnr": {"avg": row[1], "max": row[2], "min": row[3]},
+            "ssim": {"avg": row[4], "max": row[5], "min": row[6]},
+            "latency": {"avg": row[7], "max": row[8], "min": row[9]}
+        }
     def summarize(self) -> Dict[str, Any]:
         """
         Get database statistics summary
@@ -608,15 +713,7 @@ class WorldModel(WorldModelBase):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*) FROM experiments WHERE status='success'")
-        total = cursor.fetchone()[0]
-
-        cursor.execute("""
-            SELECT AVG(psnr), MAX(psnr), MIN(psnr),
-                   AVG(ssim), MAX(ssim), MIN(ssim)
-            FROM metrics
-        """)
-        stats = cursor.fetchone()
+        stats = self.get_metrics_statistics()
 
         # Get analysis count
         cursor.execute("SELECT COUNT(*) FROM llm_analyses")
@@ -625,18 +722,12 @@ class WorldModel(WorldModelBase):
         conn.close()
 
         return {
-            "total_experiments": total,
+            "total_experiments": stats["count"],
             "total_analyses": analysis_count,
-            "psnr_stats": {
-                "avg": stats[0] if stats[0] else 0,
-                "max": stats[1] if stats[1] else 0,
-                "min": stats[2] if stats[2] else 0
-            },
-            "ssim_stats": {
-                "avg": stats[3] if stats[3] else 0,
-                "max": stats[4] if stats[4] else 0,
-                "min": stats[5] if stats[5] else 0
-            }
+            "psnr_stats": stats["psnr"],
+            "ssim_stats": stats["ssim"],
+            # Preserve old structure for compatibility
+            "latency_stats": stats["latency"]
         }
 
     def get_historical_analyses(self, limit: int = 10) -> List[Dict]:
