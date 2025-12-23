@@ -337,7 +337,6 @@ Return JSON: {{"key_findings": [], "best_patterns": {{}}, "bottlenecks": []}}"""
             response = self.llm_client.chat(messages, "json")
             trends = json.loads(Utils.extract_json_from_response(response['content']))
 
-            all_exp_ids = self.world_model.get_all_experiment_ids()
             metadata = {
                 'type': 'trend_analysis',
                 'prompt': prompt,
@@ -345,8 +344,8 @@ Return JSON: {{"key_findings": [], "best_patterns": {{}}, "bottlenecks": []}}"""
                 'parsed_result': trends,
                 'model': response['model'],
                 'tokens': response['tokens'],
-                'related_ids': all_exp_ids,
-                'roles': {exp_id: 'analyzed' for exp_id in all_exp_ids}
+                'related_ids': pareto_ids,
+                'roles': {exp_id: 'pareto_context' for exp_id in pareto_ids}
             }
 
             return trends, metadata
@@ -388,7 +387,6 @@ Return JSON: {{"config_suggestions": [], "strategy": "", "expected_improvements"
             response = self.llm_client.chat(messages, "json")
             recommendations = json.loads(Utils.extract_json_from_response(response['content']))
 
-            all_exp_ids = self.world_model.get_all_experiment_ids()
             metadata = {
                 'type': 'recommendation',
                 'prompt': prompt,
@@ -396,8 +394,8 @@ Return JSON: {{"config_suggestions": [], "strategy": "", "expected_improvements"
                 'parsed_result': recommendations,
                 'model': response['model'],
                 'tokens': response['tokens'],
-                'related_ids': all_exp_ids,
-                'roles': {exp_id: 'reference' for exp_id in all_exp_ids}
+                'related_ids': [],
+                'roles': {}
             }
 
             return recommendations, metadata
