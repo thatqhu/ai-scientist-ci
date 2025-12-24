@@ -1,179 +1,120 @@
-# AI Scientist for SCI (v3.0)
+# AI Scientist CI
 
-System for automated scientific discovery using Large Language Models (LLMs). This project implements an agentic loop where multiple AI agents collaborate to plan, execute, analyze, and refine experiments in the SCI (likely Scientific Computational Imaging or similar) domain.
+AI Scientist CI is an advanced, automated scientific discovery system designed for the Compressed Imaging (SCI) domain. It leverages a multi-agent architecture orchestrated by a state-driven graph (LangGraph) to autonomously plan, execute, analyze, and refine scientific experiments.
 
-## Project Overview
+## 🚀 Key Features
 
-The **AI Scientist** acts as a "Research Director" orchestrating a team of specialized agents:
+*   **Autonomous Research Loop**: A fully automated cycle of hypothesis (plan), experiment (execute), and analysis (learn).
+*   **Multi-Agent Architecture**: Specialized agents for planning, reviewing, execution, and analysis.
+*   **State-Driven Workflow**: Uses [LangGraph](https://github.com/langchain-ai/langgraph) for robust, cyclic, and self-correcting workflow orchestration.
+*   **LLM-Powered Insights**: Utilizes Large Language Models (LLMs) for generating experiment configurations, verifying validity, and deriving scientific insights from results.
+*   **Pareto Optimization**: Automatically identifies and refines trade-offs (e.g., Image Quality vs. Reconstruction Speed) using Pareto front analysis.
+*   **Unified Persistence**: Ensures all experiment results and analytical insights are securely persisted to a World Model (SQLite/SQLAlchemy).
 
-- **Planner Agent**: Generates new experiment configurations based on previous results and exploration strategies.
-- **Reviewer Agent**: Validates and critiques proposed experiment plans.
-- **Executor Agent**: Runs experiments (supports both simulation/mock mode and actual execution).
-- **Analysis Agent**: Analyzes experiment results, identifies Pareto-optimal solutions, and generates finding/insights.
-- **World Model**: A database-backed system that maintains the state of all experiments and their results.
+## 🛠️ Architecture
 
-The system supports both **Asynchronous (Event-Driven)** and **Synchronous** execution modes.
+The system is built upon a modular architecture where agents act as nodes in a workflow graph. The state flows between these nodes, carrying the context of the current research cycle.
 
-## features
+### Agents
 
-- **Multi-Agent Architecture**: Collaborative agents communicating via a central Message Bus.
-- **Event-Driven Loop**: Asynchronous workflow allows for parallel experiment execution and analysis.
-- **Pareto Engineering**: Focuses on finding Pareto-optimal configurations across multiple objectives (e.g., performance vs. cost/complexity).
-- **LLM-Powered**: Uses LLMs (like GPT-4) for reasoning in planning and analysis.
-- **Design Space Exploration**: Automatically explores hyperparameter spaces defined in configuration.
+1.  **PlannerAgent (`src/agents/sci/planner.py`)**: Uses LLMs and historical data to propose new experiment configurations. It balances exploration (trying new things) and exploitation (refining best results).
+2.  **PlanReviewerAgent (`src/agents/sci/reviewer.py`)**: Acts as a critic. It validates proposed plans against safety rules and strategic goals, providing feedback to the Planner if revisions are needed.
+3.  **ExecutorAgent (`src/agents/sci/executor.py`)**: Responsible for running experiments. It can interface with a real remote SCI service or run in a local mock mode for testing.
+4.  **AnalysisAgent (`src/agents/sci/analysis.py`)**: Analyzes experiment results to compute statistics, identify Pareto frontiers, and generate high-level scientific insights using LLMs.
 
-## Project Structure
+### Workflow Graph
 
-```
-├── config/                 # Configuration files
-│   └── default.yaml        # Default settings for agents, synthesis, and experiments
-├── src/                    # Source code
-│   ├── agents/             # Agent implementations
-│   │   ├── base.py         # Base agent class
-│   │   └── sci/            # Domain-specific agents
-│   │       ├── planner.py      # Experiment planning logic
-│   │       ├── executor.py     # Experiment execution logic
-│   │       ├── analysis.py     # Result analysis and insight generation
-│   │       ├── reviewer.py     # Plan review and validation
-│   │       ├── world_model.py  # Data storage and retrieval
-│   │       └── structures.py   # Data structures
-│   ├── core/               # Core framework components
-│   │   ├── scientist.py    # Main orchestration loop (Director)
-│   │   ├── bus.py          # Message bus for event handling
-│   │   └── world_model_base.py
-│   └── llm/                # LLM client wrappers and utilities
-├── sci_loop.py             # Main entry point script
-├── mock_service.py         # Mock service for simulation
-├── pyproject.toml          # Project dependencies and metadata
-└── uv.lock                 # Dependency lock file
-```
-
-## Event Flow (Architecture)
-
-The system uses an **Event-Driven Architecture (EDA)** with a `MessageBus` for asynchronous agent communication.
-
-### 1. Planning Phase
-*   **Trigger**: `Director` starts a new research cycle.
-*   **Action**:
-    1.  **Director** publishes `PLAN_REQUESTED`.
-    2.  **PlannerAgent** receives the request, queries the `WorldModel` for history/context, and uses LLM to generate new experiment configurations.
-    3.  **PlannerAgent** publishes `PLAN_PROPOSED`.
-
-### 2. Review Phase
-*   **Trigger**: `PLAN_PROPOSED` event.
-*   **Action**:
-    1.  **ReviewerAgent** validates the proposed plan (rule-based checks + LLM safety/strategy review).
-    2.  If **Approved**: Publishes `PLAN_APPROVED` with the valid configs.
-    3.  If **Rejected**: Publishes `PLAN_REJECTED` (Director may retry planning).
-
-### 3. Execution Phase
-*   **Trigger**: `PLAN_APPROVED` event.
-*   **Action**:
-    1.  **ExecutorAgent** submits experiments to the SCI Service (or runs them in Mock mode).
-    2.  Experiments run in parallel/async.
-    3.  As each experiment finishes, **ExecutorAgent** publishes `EXPERIMENT_COMPLETED`.
-
-### 4. Monitoring & Analysis Phase
-*   **Trigger**: `EXPERIMENT_COMPLETED` events.
-*   **Action**:
-    1.  **Director** tracks progress. When all planned experiments for the cycle are done, it publishes `ANALYSIS_REQUESTED`.
-    2.  **AnalysisAgent** analyzes the new results, identifying the Pareto Front and generating trends/insights using LLM.
-    3.  **AnalysisAgent** publishes `INSIGHT_GENERATED`.
-
-### 5. Decision Phase
-*   **Trigger**: `INSIGHT_GENERATED` event.
-*   **Action**:
-    1.  **Director** saves insights to the `WorldModel`.
-    2.  Checks budget and cycle limits.
-    3.  If resources remain, it triggers the **next cycle** (Go to Step 1).
-    4.  Otherwise, it terminates the loop.
+The core logic is defined in `sci_loop.py` and `src/core/workflow_graph.py`. The workflow follows this high-level topology:
 
 ```mermaid
-sequenceDiagram
-    participant D as Director (AIScientist)
-    participant P as Planner
-    participant R as Reviewer
-    participant E as Executor
-    participant A as Analyzer
-
-    Note over D: Start Cycle
-    D->>P: PLAN_REQUESTED
-    P->>R: PLAN_PROPOSED
-    alt Plan Rejected
-        R-->>D: PLAN_REJECTED
-        D->>P: PLAN_REQUESTED (Retry)
-    else Plan Approved
-        R->>D: PLAN_APPROVED (Update Counters)
-        R->>E: PLAN_APPROVED
-    end
-
-    par Parallel Execution
-        E->>D: EXPERIMENT_COMPLETED (Exp 1)
-        E->>D: EXPERIMENT_COMPLETED (Exp 2)
-    end
-
-    Note over D: All Experiments Done?
-    D->>A: ANALYSIS_REQUESTED
-    A->>D: INSIGHT_GENERATED
-
-    Note over D: Check Trigger Next Cycle
+graph TD
+    Start([Start]) --> Planner
+    Planner --> Reviewer
+    Reviewer -->|Approved| Executor
+    Reviewer -->|Rejected| Planner
+    Executor --> PersistenceResults[Persistence (Results)]
+    PersistenceResults --> Analyzer
+    Analyzer --> PersistenceInsights[Persistence (Insights)]
+    PersistenceInsights -->|Continue Cycle| Planner
+    PersistenceInsights -->|Budget Exhausted| End([End])
 ```
 
-## Installation
+1.  **Planning**: The `Planner` proposes a batch of experiments.
+2.  **Review**: The `Reviewer` checks the plan. If rejected, it loops back to `Planner` with feedback.
+3.  **Execution**: Approved plans are executed by the `Executor` (async/parallel).
+4.  **Persistence (Results)**: Raw experiment results are saved to the World Model.
+5.  **Analysis**: The `Analyzer` processes results, updating the Pareto front and generating insights.
+6.  **Persistence (Insights)**: Analysis insights are saved.
+7.  **Loop/Terminate**: The system checks the budget. If remaining, it starts a new cycle; otherwise, it terminates.
 
-This project uses modern Python packaging. Ensure you have Python 3.9+ installed.
+## 📂 Project Structure
 
-1.  **Clone the repository**
-2.  **Install dependencies**:
-    It is recommended to use a virtual environment.
+```
+├── config/
+│   └── default.yaml         # Configuration for agents, LLMs, and experiments
+├── sci_loop.py              # Main entry point for the application
+├── src/
+│   ├── agents/              # Agent implementations
+│   │   ├── base.py          # Base Agent class
+│   │   ├── sci/             # SCI-domain specific agent logic
+│   │   │   ├── planner.py   # PlannerAgent
+│   │   │   ├── reviewer.py  # PlanReviewerAgent
+│   │   │   ├── executor.py  # ExecutorAgent
+│   │   │   ├── analysis.py  # AnalysisAgent
+│   │   │   ├── world_model.py # Data access layer (WorldModel)
+│   │   │   └── structures.py # Data classes (ExperimentResult, SCIConfiguration, etc.)
+│   ├── core/                # Core framework components
+│   │   ├── workflow_graph.py # LangGraph node wrappers and builder
+│   │   ├── state.py          # Global AgentState definition
+│   │   └── world_model_base.py # Abstract base class for World Models
+│   └── llm/                 # LLM client utilities
+└── pyproject.toml           # Project dependencies
+```
 
-    ```bash
-    pip install -e .
-    # OR if using uv
-    uv sync
-    ```
+## 🚦 Getting Started
 
-3.  **Environment Setup**:
-    Create a `.env` file in the root directory with your API keys:
+### Prerequisites
 
-    ```env
-    OPENAI_API_KEY=your_api_key_here
-    ```
+*   Python 3.12+
+*   `uv` (recommended) or `pip`
+*   OpenAI API Key (or compatible) for LLM features
 
-## Usage
-
-To run the AI Scientist loop:
+### Installation
 
 ```bash
-python sci_loop.py [options]
+# Install dependencies
+uv sync
+# OR
+pip install -r requirements.txt # (if generated)
 ```
 
-### Options
+### Configuration
 
-- `--config`: Path to configuration file (default: `config/default.yaml`)
-- `--mock`: Run in mock mode (simulates experiments without real execution).
-- `--budget`: Set the maximum number of experiments to run.
-- `--cycles`: Set the maximum number of research cycles.
+Edit `config/default.yaml` to set your preferences, such as:
+*   `llm`: API key and model selection.
+*   `experiment`: Budget and cycle limits.
+*   `executor`: Mock mode vs. real service URL.
 
-### Example
+### Running
 
-Run with default settings (mock mode):
+Run the main loop:
+
 ```bash
-python sci_loop.py --mock
+# Run with default settings (Mock mode enabled by default in config)
+python sci_loop.py
+
+# Run with specific budget and cycles
+python sci_loop.py --budget 10 --cycles 3
+
+# Run against real service (disable mock)
+python sci_loop.py --no-mock
 ```
 
-Run with specific budget:
+## 🧪 Mock Service
+
+A mock service is included (`mock_service.py`) to simulate the SCI training API for local development and testing without GPU resources.
+
 ```bash
-python sci_loop.py --budget 50 --cycles 10
+# Start the mock service
+uv run python mock_service.py
 ```
-
-## Configuration
-
-The standard configuration is located in `config/default.yaml`. You can customize:
-- **Design Space**: The parameters and ranges to explore (e.g., `compression_ratios`, `learning_rates`).
-- **LLM Settings**: Model selection and API base URLs.
-- **Experiment Settings**: Budget caps and cycle limits.
-
-## License
-
-MIT
