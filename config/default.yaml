@@ -45,11 +45,15 @@ design_space:
 experiment:
   budget_max: 3
   max_cycles: 1
-  mock_mode: false
+  mock_mode: remote
 
 # Planner Settings
 planner:
   max_configs_per_cycle: 3
+  design_id: -1 # resume from design, -1 means start from scratch
+
+pareto:
+  top_k: 10
 
 # Executor Settings
 executor:
