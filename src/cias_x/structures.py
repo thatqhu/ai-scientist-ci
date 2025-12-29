@@ -24,6 +24,12 @@ class UQScheme(str, Enum):
     BAYESIAN = "bayesian"
     NONE = "none"
 
+class Status(str, Enum):
+    """Experiment status"""
+    SUCCESS = "success"
+    IN_PROGRESS = "in_progress"
+    FAILED = "failed"
+
 
 @dataclass
 class ForwardConfig:
@@ -98,7 +104,7 @@ class ExperimentResult:
     config: SCIConfiguration
     metrics: Metrics
     artifacts: Artifacts
-    status: str
+    status: Status
     started_at: str
     completed_at: str
     error_message: Optional[str] = None

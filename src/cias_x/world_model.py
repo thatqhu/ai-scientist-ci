@@ -51,8 +51,9 @@ class CIASWorldModel:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS designs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    global_summary TEXT DEFAULT '',
-                    last_summary_plan_id INTEGER DEFAULT 0,
+                    global_summary TEXT,
+                    last_summary_plan_id INTEGER,
+                    token_used INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -63,7 +64,11 @@ class CIASWorldModel:
                 CREATE TABLE IF NOT EXISTS plans (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     design_id INTEGER NOT NULL,
-                    summary TEXT DEFAULT '',
+                    summary TEXT,
+                    token_total_used INTEGER DEFAULT 0,
+                    token_plan_used INTEGER DEFAULT 0,
+                    token_analysis_used INTEGER DEFAULT 0,
+                    token_global_summary_used INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(design_id) REFERENCES designs(id)
                 )
@@ -108,19 +113,27 @@ class CIASWorldModel:
 
     # ==================== Design Operations ====================
 
-    def get_or_create_design(self) -> int:
+    def get_or_create_design(self, design_id: int = 0) -> List[Any]:
         """Get the latest design or create a new one."""
         with self._get_conn() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM designs ORDER BY id DESC LIMIT 1")
-            row = cursor.fetchone()
+            if design_id <= 0: _create_design()
 
+            cursor.execute("SELECT id, global_summary FROM designs WHERE id = ?", (design_id,))
+            row = cursor.fetchone()
             if row:
-                return row[0]
+                return [row[0], row[1]]
             else:
-                cursor.execute("INSERT INTO designs (global_summary) VALUES ('')")
-                conn.commit()
-                return cursor.lastrowid
+                return self._create_design()
+
+    def _create_design(self) -> List[Any]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO designs (global_summary) VALUES ('')")
+            conn.commit()
+            cursor.execute("SELECT id, global_summary FROM designs ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            return [row[0], row[1]]
 
     def get_global_summary(self, design_id: int) -> str:
         """Get the global summary for a design."""
@@ -159,6 +172,17 @@ class CIASWorldModel:
             row = cursor.fetchone()
             return row[0] if row else 0
 
+    def append_design_token_used(self, design_id: int, token_used: int):
+        """Update the token_used for a design."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT token_used FROM designs WHERE id = ?", (design_id,))
+            row = cursor.fetchone()
+            cursor.execute(
+                "UPDATE designs SET token_used = ? WHERE id = ?",
+                (row[0] + token_used, design_id)
+            )
+            conn.commit()
     # ==================== Plan Operations ====================
 
     def create_plan(self, design_id: int) -> int:
@@ -206,6 +230,48 @@ class CIASWorldModel:
             row = cursor.fetchone()
             return row[0] if row else None
 
+    def get_latest_plan_summary(self, design_id: int) -> Optional[int]:
+        """Get the most recent plan_id for a design."""
+        plan_id = self.get_latest_plan_id(design_id)
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT summary FROM plans WHERE id = ?",
+                (plan_id,)
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def append_plan_token_used(self, plan_id: int, token_used: int, token_type: str = None):
+        """Update the token_used for a design."""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT token_total_used, token_plan_used, token_analysis_used, token_global_summary_used FROM plans WHERE id = ?", (plan_id,))
+            row = cursor.fetchone()
+            token_total_used = row[0]
+            token_plan_used = row[1]
+            token_analysis_used = row[2]
+            token_global_summary_used = row[3]
+
+            if token_type == "plan":
+                token_plan_used += token_used
+            elif token_type == "analysis":
+                token_analysis_used += token_used
+            elif token_type == "global_summary":
+                token_global_summary_used += token_used
+
+            cursor.execute(
+                """
+                    UPDATE plans SET
+                        token_total_used = ?,
+                        token_plan_used = ?,
+                        token_analysis_used = ?,
+                        token_global_summary_used = ?
+                    WHERE id = ?
+                """,
+                (token_total_used + token_used, token_plan_used, token_analysis_used, token_global_summary_used, plan_id)
+            )
+            conn.commit()
     # ==================== Experiment Operations ====================
 
     def save_experiment(self, plan_id: int, config: Dict, metrics: Dict, artifacts: Dict = None, status: str = "completed") -> int:

@@ -38,11 +38,11 @@ class CIASPlannerAgent:
     3. Design space for validation
     """
 
-    def __init__(self, llm_client: Optional[LLMClient], world_model: CIASWorldModel, max_configs_per_cycle: int = 3):
+    def __init__(self, llm_client: Optional[LLMClient], world_model: CIASWorldModel, max_configs_per_plan: int = 3):
         self.llm_client = llm_client
         self.world_model = world_model
         self.name = "Planner"
-        self.max_configs_per_cycle = max_configs_per_cycle
+        self.max_configs_per_plan = max_configs_per_plan
         logger.info("CIASPlannerAgent initialized")
 
     def __call__(self, state: AgentState) -> Dict[str, Any]:
@@ -63,45 +63,53 @@ class CIASPlannerAgent:
 
         # 1. Get or create design_id
         design_id = state.get("design_id", 0)
-        if not design_id:
-            design_id = self.world_model.get_or_create_design()
-            logger.info(f"Created/Retrieved design ID: {design_id}")
+        [design_id, global_summary] = self.world_model.get_or_create_design(design_id)
+        logger.info(f"Created/Retrieved design ID: {design_id}")
 
         # Get context
-        global_summary = state.get("global_summary", "")
-        last_plan_summary = state.get("last_plan_summary", "")
-        pareto_frontiers = state.get("pareto_frontiers", [])
         design_space = state.get("design_space", {})
+        token_remaining = state.get("token_remaining", 0)
+        latest_plan_summary = state.get("latest_plan_summary", "")
+        if not latest_plan_summary:
+            latest_plan_summary = self.world_model.get_latest_plan_summary(design_id)
+
+        pareto_frontiers = state.get("pareto_frontiers", [])
+        if not pareto_frontiers:
+            pareto_frontiers = self.world_model.get_pareto_frontiers(design_space['recon_families'][0])
 
         # 2. Generate configs
-        if not global_summary and not pareto_frontiers and not last_plan_summary:
+        token_used = 0
+        if not pareto_frontiers and not latest_plan_summary:
             # First time: Generate baseline configs
             logger.info("No history found. Generating baseline configs.")
             new_configs = self._create_baseline_configs(design_space)
         else:
             # Use LLM to generate configs
             logger.info("Using LLM to generate new configs based on history.")
-            new_configs = self._llm_generate_configs(
-                global_summary, last_plan_summary, pareto_frontiers, design_space
+            new_configs, token_used = self._llm_generate_configs(
+                global_summary, latest_plan_summary, pareto_frontiers, design_space
             )
 
             if not new_configs:
                 logger.warning("LLM returned no configs, falling back to random generation.")
                 new_configs = [self._generate_random_config(design_space) for _ in range(3)]
 
+        plan_id = self.world_model.create_plan(design_id)
+        self.world_model.append_plan_token_used(plan_id=plan_id, token_used=token_used, token_type="plan")
+
         logger.info(f"Planner Agent: Generated {len(new_configs)} configs")
 
         return {
             "design_id": design_id,
             "configs": new_configs,
-            "status": "executing",
-            "executed_experiment_count": state.get("executed_experiment_count", 0) + self.max_configs_per_cycle
+            "token_remaining": token_remaining - token_used,
+            "status": "executing"
         }
 
     def _build_planner_prompt(
         self,
         global_summary: str,
-        last_plan_summary: str,
+        latest_plan_summary: str,
         pareto_frontiers: List[Dict],
         design_space: Dict
     ) -> str:
@@ -125,7 +133,7 @@ class CIASPlannerAgent:
         # Format summary
         summary_text = f"## Global Summary\n{global_summary}\n" if global_summary else "## Global Summary\nNo summary yet (initial exploration phase).\n"
 
-        last_plan_summary = f"## Last Plan Summary\n{last_plan_summary}\n" if last_plan_summary else "## Last Plan Summary\nNo summary yet (initial exploration phase).\n"
+        latest_plan_summary = f"## Last Plan Summary\n{latest_plan_summary}\n" if latest_plan_summary else "## Last Plan Summary\nNo summary yet (initial exploration phase).\n"
 
 
         # Format design space
@@ -135,7 +143,7 @@ class CIASPlannerAgent:
 
 {summary_text}
 
-{last_plan_summary}
+{latest_plan_summary}
 
 {frontier_text}
 
@@ -143,8 +151,9 @@ class CIASPlannerAgent:
 
 ## Task
 Based on the global summary (identifying under-explored regions) and the current Pareto frontiers,
-propose {self.max_configs_per_cycle} NEW experiment configurations that:
+propose {self.max_configs_per_plan} NEW experiment configurations that:
 
+1. **Exclude all**: Any failed summary text.
 1. **Explore gaps**: Target under-explored parameter combinations mentioned in the summary
 2. **Exploit frontiers**: Refine promising configurations from the Pareto front
 3. **Diversify**: Ensure variety in proposed configs
@@ -173,16 +182,16 @@ Ensure all values are from the Design Space options."""
     def _llm_generate_configs(
         self,
         global_summary: str,
-        last_plan_summary: str,
+        latest_plan_summary: str,
         pareto_frontiers: List[Dict],
         design_space: Dict
-    ) -> List[SCIConfiguration]:
+    ) -> tuple[List[SCIConfiguration], int]:
         """Use LLM to generate experiment configurations."""
         if not self.llm_client:
             logger.warning("No LLM client available")
-            return []
+            return [], 0
 
-        prompt = self._build_planner_prompt(global_summary, last_plan_summary, pareto_frontiers, design_space)
+        prompt = self._build_planner_prompt(global_summary, latest_plan_summary, pareto_frontiers, design_space)
 
         messages = [
             {"role": "system", "content": "You are an expert AI scientist. Output valid JSON only."},
@@ -192,6 +201,7 @@ Ensure all values are from the Design Space options."""
         try:
             response = self.llm_client.chat(messages, response_format="json")
             content = response['content']
+            token_used = response['tokens']
 
             # Parse JSON
             json_content = self._extract_json(content)
@@ -205,11 +215,11 @@ Ensure all values are from the Design Space options."""
                 if config:
                     valid_configs.append(config)
 
-            return valid_configs
+            return valid_configs, token_used
 
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
-            return []
+            return [], 0
 
     def _extract_json(self, content: str) -> str:
         """Extract JSON from response, handling markdown code blocks."""

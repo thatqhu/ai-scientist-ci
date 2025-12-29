@@ -34,7 +34,7 @@ llm:
 design_space:
   compression_ratios: [8, 16, 24]
   mask_types: ["random", "optimized"]
-  recon_families: ["CIAS-Core-ELP"]
+  recon_families: ["CIAS-Core-ELP"] # the pareto frontier will use this
   num_stages: [5, 7, 9]
   num_features: [32, 64, 128]
   num_blocks: [2, 3, 4]
@@ -43,17 +43,17 @@ design_space:
 
 # Experiment Settings
 experiment:
-  budget_max: 3 # max plans plan design
-  max_cycles: 1
+  budget_max: 1 # max plans per design
+  max_tokens: 40960
   mock_mode: remote
 
 # Planner Settings
 planner:
-  max_configs_per_cycle: 10 # max experiments per plan
-  design_id: 0 # resume from design, 0 means start from scratch
+  max_configs_per_plan: 1 # max experiments per plan, this means the experiments = budget_max * max_configs_per_plan
+  design_id: 1 # resume from design, 0 means start from scratch
 
 pareto:
-  top_k: 10 # numbers of pareto frontiers to keep
+  top_k: 10 # numbers of top pareto frontiers to keep
 
 # Executor Settings
 executor:

@@ -24,7 +24,7 @@ We have 3 tiers data structure in world mode:
 **Tier1**: The experiments data: configs, metrics and artifacs. --> executor generated
 **Tier2**: The sumarized info per plan: plan summary. --> analyst generated
 **Tier3**: The global_summary and global pareto frontier. --> planer used
-**Tier4**: The in-memory data: global_summary, last_plan_summary and pareto_frontiers. --> planer used
+**Tier4**: The in-memory data: global_summary, latest_plan_summary and pareto_frontiers. --> planer used
 
 ### 1.3 Workflow
 
@@ -53,7 +53,7 @@ This project will use langgraph as the agent workflow handler. The graph state s
         # Analyst
         pareto_frontiers: List[Any] # Pareto frontiers from WorldModel
         global_summary: str # Global summary from WorldModel
-        last_plan_summary: str
+        latest_plan_summary: str
 
         # Workflow Control
         status: str  # "planning", "executing", "analyzing", "end"
@@ -84,7 +84,7 @@ The planner then use below logic to generate new configs:
 
 For the first time(there is no global_summary, frontiers and experiments), let LLM give a baseline config.
 
-The planner use the top k pareto frontiers, `last_plan_summary`(current trends) and the `global_summary`(total insights) to generate the next new configs.
+The planner use the top k pareto frontiers, `latest_plan_summary`(current trends) and the `global_summary`(total insights) to generate the next new configs.
 
 The new config should be saved in `configs` in graph state.
 

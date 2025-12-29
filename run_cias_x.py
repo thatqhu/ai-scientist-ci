@@ -89,19 +89,20 @@ async def run_workflow(args):
     top_k = args.top_k or config.get('pareto', {}).get('top_k', 10)
 
     # planner config
-    max_configs_per_cycle = config.get('planner', {}).get('max_configs_per_cycle', 3)
+    max_configs_per_plan = config.get('planner', {}).get('max_configs_per_plan', 3)
     design_id = config.get('planner', {}).get('design_id', 0)
 
     # Budget and execution mode
     budget = args.budget or config.get('experiment', {}).get('budget_max', 10)
     execution_mode = "remote" if args.remote else config.get('experiment', {}).get("mock_mode", "mock")
     service_url = args.service_url or config.get('experiment', {}).get('service_url', 'http://localhost:8000')
+    max_token = config.get('experiment', {}).get('max_tokens', 40960)
 
     # Initialize components
     logger.info(f"Initializing CIAS-X with database: {db_path}, top_k={top_k}")
     world_model = CIASWorldModel(db_path, top_k=top_k)
 
-    planner = CIASPlannerAgent(llm_client, world_model, max_configs_per_cycle)
+    planner = CIASPlannerAgent(llm_client, world_model, max_configs_per_plan)
     executor = CIASExecutorAgent(
         llm_client,
         world_model,
@@ -118,6 +119,7 @@ async def run_workflow(args):
         "executed_experiment_count": 0,
         "design_space": design_space,
         "budget_remaining": budget,
+        "token_remaining": max_token,
         "design_id": design_id,  # Planner will initialize
         "configs": [],
         "experiments": [],
@@ -134,12 +136,15 @@ async def run_workflow(args):
     try:
         final_state = await app.ainvoke(initial_state)
 
+        world_model.append_design_token_used(design_id=final_state.get("design_id", 0), token_used=max_token - final_state.get('token_remaining', 0))
+
         # Report results
         logger.info("=" * 60)
         logger.info("CIAS-X Workflow Completed")
         logger.info(f"  Final Status: {final_state.get('status')}")
         logger.info(f"  Total Executed Experiments: {final_state.get('executed_experiment_count', 0)}")
         logger.info(f"  Budget Remaining: {final_state.get('budget_remaining')}")
+        logger.info(f"  Token Remaining: {final_state.get('token_remaining')}")
 
         pareto_frontiers = final_state.get('pareto_frontiers', [])
         logger.info(f"  Pareto Frontiers: {len(pareto_frontiers)}")

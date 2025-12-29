@@ -16,6 +16,8 @@ from typing import List, Dict, Any, Optional
 from dataclasses import asdict
 from datetime import datetime
 import numpy as np
+from .structures import Status
+import asyncio
 
 try:
     import httpx
@@ -82,28 +84,31 @@ class CIASExecutorAgent:
 
         logger.info(f"CIASExecutorAgent initialized (mode={execution_mode}, service={service_url or 'N/A'})")
 
-    def __call__(self, state: AgentState) -> Dict[str, Any]:
+    async def __call__(self, state: AgentState) -> Dict[str, Any]:
         """LangGraph node entry point."""
-        return self.execute(state)
+        return await self.execute(state)
 
-    def execute(self, state: AgentState) -> Dict[str, Any]:
+    async def execute(self, state: AgentState) -> Dict[str, Any]:
         """Execute experiments for the current plan cycle."""
         logger.info(f"Executor Agent: Starting execution phase (mode={self.execution_mode})")
 
         design_id = state.get("design_id")
         configs = state.get("configs", [])
 
-        # 1. Create plan record
-        plan_id = self.world_model.create_plan(design_id)
-        logger.info(f"Created Plan ID: {plan_id} for design {design_id}")
+        # 1. curent latest plan record
+        plan_id = self.world_model.get_latest_plan_id(design_id)
+        logger.info(f"Retrieve Plan ID: {plan_id} for design {design_id}")
 
         # 2. Execute experiments
-        experiments = []
-        for config in configs:
-            result = self._run_experiment(config)
-            experiments.append(result)
+        async with asyncio.TaskGroup() as tg:
+            tasks = [
+                tg.create_task(self._run_experiment(config))
+                for config in configs
+            ]
 
-            # 3. Save to database
+        # 3. Save to database
+        experiments = [task.result() for task in tasks]
+        for result in experiments:
             config_dict = self._to_serializable(asdict(result.config))
             metrics_dict = self._to_serializable(asdict(result.metrics))
             artifacts_dict = self._to_serializable(asdict(result.artifacts))
@@ -115,25 +120,42 @@ class CIASExecutorAgent:
                 artifacts=artifacts_dict,
                 status=result.status
             )
-            logger.debug(f"Saved experiment {result.experiment_id} with DB ID {exp_id}")
+
+        logger.debug(f"Saved {len(experiments)} experiments in plan ({plan_id}).")
+
+        executed_experiment_count = state.get("executed_experiment_count", 0) + len(experiments)
 
         logger.info(f"Executor Agent: Completed {len(experiments)} experiments")
-        logger.info(f"Executor Agent: Total executed experiments: {state.get('executed_experiment_count')}")
+        logger.info(f"Executor Agent: Total executed experiments: {executed_experiment_count}")
 
         # 4. Update state
         return {
             "experiments": experiments,
-            "status": "analyzing"
+            "status": "analyzing",
+            "executed_experiment_count": executed_experiment_count
         }
 
-    def _run_experiment(self, config: SCIConfiguration) -> ExperimentResult:
+    async def _run_experiment(self, config: SCIConfiguration) -> ExperimentResult:
         """Run a single experiment based on execution mode."""
-        if self.execution_mode == "mock":
-            return self._run_mock_experiment(config)
-        elif self.execution_mode == "remote":
-            return self._run_remote_experiment(config)
-        else:
-            raise ValueError(f"Unknown execution mode: {self.execution_mode}")
+        try:
+            if self.execution_mode == "mock":
+                return self._run_mock_experiment(config)
+            elif self.execution_mode == "remote":
+                return self._run_remote_experiment(config)
+            else:
+                raise ValueError(f"Unknown execution mode: {self.execution_mode}")
+        except Exception as e:
+            logger.error(f"Experiment failed: {str(e)}")
+            return ExperimentResult(
+                experiment_id=config.experiment_id,
+                config=config,
+                metrics=Metrics(),
+                artifacts=Artifacts(),
+                status=Status.FAILED,
+                error_message=str(e),
+                started_at=datetime.now().isoformat(),
+                completed_at=datetime.now().isoformat()
+            )
 
     def _run_remote_experiment(self, config: SCIConfiguration) -> ExperimentResult:
         """
@@ -260,7 +282,7 @@ class CIASExecutorAgent:
                     config=config,
                     metrics=metrics,
                     artifacts=artifacts,
-                    status="success",
+                    status=Status.SUCCESS,
                     started_at=started_at,
                     completed_at=result_data.get("completed_at", datetime.now().isoformat())
                 )
@@ -288,7 +310,7 @@ class CIASExecutorAgent:
                 checkpoint_path="", training_log_path="",
                 sample_reconstructions=[], figure_scripts=[], metrics_history={}
             ),
-            status="failed",
+            status=Status.FAILED,
             error_message=error_message,
             started_at=started_at,
             completed_at=datetime.now().isoformat()

@@ -41,8 +41,8 @@ def create_cias_workflow(
     def planner_node(state: AgentState) -> Dict[str, Any]:
         return planner(state)
 
-    def executor_node(state: AgentState) -> Dict[str, Any]:
-        return executor(state)
+    async def executor_node(state: AgentState) -> Dict[str, Any]:
+        return await executor(state)
 
     def analyst_node(state: AgentState) -> Dict[str, Any]:
         return analyst(state)
@@ -64,7 +64,7 @@ def create_cias_workflow(
         """Determine whether to continue the loop."""
         if state.get("status") == "end":
             return "end"
-        if state.get("budget_remaining", 0) <= 0:
+        if state.get("budget_remaining", 0) <= 0 or state.get("token_remaining", 0) <= 0:
             return "end"
         return "planner"
 

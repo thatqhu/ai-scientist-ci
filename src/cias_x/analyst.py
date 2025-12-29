@@ -37,7 +37,7 @@ class CIASAnalystAgent:
         self.llm_client = llm_client
         self.world_model = world_model
         self.name = "Analyst"
-        self.global_summary_interval = 50
+        self.global_summary_interval = 10
         logger.info("CIASAnalystAgent initialized")
 
     def __call__(self, state: AgentState) -> Dict[str, Any]:
@@ -52,6 +52,7 @@ class CIASAnalystAgent:
         executed_experiment_count = state.get("executed_experiment_count", 0)
         experiments = state.get("experiments", [])
         budget_remaining = state.get("budget_remaining", 0)
+        token_remaining = state.get("token_remaining", 0)
 
         # 1. Convert experiments to dict format
         current_experiments = []
@@ -89,7 +90,7 @@ class CIASAnalystAgent:
                 flat_frontiers.append(c)
 
         # 5. Generate LLM plan summary (3-6 sentences with recommendation and trends)
-        plan_summary = self._generate_plan_summary(current_experiments, flat_frontiers)
+        plan_summary, analysis_used = self._generate_plan_summary(current_experiments, flat_frontiers)
 
         # 6. Update plan with summary
         latest_plan_id = self.world_model.get_latest_plan_id(design_id)
@@ -101,24 +102,32 @@ class CIASAnalystAgent:
         # Always load current global summary from database
         global_summary = self.world_model.get_global_summary(design_id)
         last_summary_plan_id = self.world_model.get_last_summary_plan_id(design_id)
-        plans_since_last = self.world_model.get_plan_count_since(design_id, last_summary_plan_id)
+        plans_since_last = 0
+        if last_summary_plan_id:
+            plans_since_last = self.world_model.get_plan_count_since(design_id, last_summary_plan_id)
 
         # Update global summary if threshold reached
-        if global_summary == '' or (plans_since_last >= self.global_summary_interval and latest_plan_id):
+        token_used_design = 0
+        if not last_summary_plan_id or (plans_since_last >= self.global_summary_interval and latest_plan_id):
             logger.info(f"Triggering global summary update ({plans_since_last} plans since last update)")
-            global_summary = self._update_global_summary(design_id, global_summary, last_summary_plan_id, latest_plan_id)
+            _, token_used_design = self._update_global_summary(design_id, global_summary, last_summary_plan_id, latest_plan_id)
 
         # Determine next status
         new_budget = budget_remaining - 1 # each plan - execution - analysis costs 1 budget
         next_status = "planning" if new_budget > 0 else "end"
 
-        logger.info(f"Analyst Agent: Analysis complete. Budget remaining: {new_budget}")
+        self.world_model.append_plan_token_used(plan_id=latest_plan_id, token_used=analysis_used, token_type="analysis")
+        self.world_model.append_plan_token_used(plan_id=latest_plan_id, token_used=token_used_design, token_type="global_summary")
+
+        token_remaining = token_remaining - analysis_used - token_used_design
+        token_remaining = 0 if token_remaining <= 0 else token_remaining
+        logger.info(f"Analyst Agent: Analysis complete. Budget remaining: {new_budget}. Token remaining: {token_remaining}")
 
         return {
             "pareto_frontiers": flat_frontiers,
-            "global_summary": global_summary,
-            "last_plan_summary": plan_summary,
+            "latest_plan_summary": plan_summary,
             "budget_remaining": new_budget,
+            "token_remaining": token_remaining,
             "status": next_status
         }
 
@@ -189,7 +198,7 @@ class CIASAnalystAgent:
 
         return [items[i] for i in range(n) if is_efficient[i]]
 
-    def _generate_plan_summary(self, current_experiments: List[Dict], pareto_frontiers: List[Dict]) -> str:
+    def _generate_plan_summary(self, current_experiments: List[Dict], pareto_frontiers: List[Dict]) -> tuple[str, int]:
         """
         Generate plan summary using LLM.
         Summary should be 3-6 sentences and include current experiments summary, recommendations, and trends.
@@ -231,17 +240,17 @@ Output the summary text only (no JSON, no markdown, no bullet points - just a fl
 
         try:
             response = self.llm_client.chat([{"role": "user", "content": prompt}])
-            return response['content'].strip()
+            return response['content'].strip(), response['tokens']
         except Exception as e:
             logger.error(f"Plan summary generation failed: {e}")
-            return "Summary generation failed."
+            return "Summary generation failed.", 0
 
-    def _update_global_summary(self, design_id: int, old_summary: str, since_plan_id: int, current_plan_id: int) -> str:
+    def _update_global_summary(self, design_id: int, old_summary: str, since_plan_id: int, current_plan_id: int) -> tuple[str, int]:
         """Generate and save updated global summary."""
-        recent_summaries = self.world_model.get_plan_summaries_since(design_id, since_plan_id)
+        recent_summaries = self.world_model.get_plan_summaries_since(design_id, since_plan_id if since_plan_id else current_plan_id)
 
         if not self.llm_client:
-            return old_summary
+            return old_summary, 0
 
         # Build prompt
         recent_text = "\n".join([f"- {s}" for s in recent_summaries])
@@ -270,10 +279,10 @@ Output the summary text only (no JSON, no markdown)."""
             self.world_model.update_global_summary(design_id, new_summary, current_plan_id)
             logger.info(f"Updated global summary (new baseline plan_id: {current_plan_id})")
 
-            return new_summary
+            return new_summary, response['tokens']
         except Exception as e:
             logger.error(f"Global summary update failed: {e}")
-            return old_summary
+            return old_summary, 0
 
     def _to_serializable(self, obj: Any) -> Any:
         """Recursively convert to JSON-serializable format."""
