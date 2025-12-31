@@ -32,6 +32,7 @@ class AgentState(TypedDict):
 
     # Analyst
     pareto_frontiers: List[Any]  # Pareto frontiers from WorldModel
+    top_k: int
 
     # Workflow Control
     status: str  # "planning", "executing", "analyzing", "end"

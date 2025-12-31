@@ -109,9 +109,9 @@ class CIASExecutorAgent:
         # 3. Save to database
         experiments = [task.result() for task in tasks]
         for result in experiments:
-            config_dict = self._to_serializable(asdict(result.config))
-            metrics_dict = self._to_serializable(asdict(result.metrics))
-            artifacts_dict = self._to_serializable(asdict(result.artifacts))
+            config_dict = self._to_serializable(result.config.model_dump())
+            metrics_dict = self._to_serializable(result.metrics.model_dump())
+            artifacts_dict = self._to_serializable(result.artifacts.model_dump())
 
             exp_id = self.world_model.save_experiment(
                 plan_id=plan_id,

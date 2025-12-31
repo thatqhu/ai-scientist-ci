@@ -29,15 +29,13 @@ class CIASWorldModel:
     """
 
     def __init__(self, db_path: str = "cias_x.db",
-        top_k: int = 10,
         vector_db: str = "chromadb",
         vector_memory: VectorMemoryConfig = VectorMemoryConfig()):
         self.db_path = db_path
-        self.top_k = top_k  # Configurable top-k for Pareto frontiers
         self._init_db()
         self.vector_memory = vector_memory
         self.chroma_client = chromadb.PersistentClient(path=vector_db)
-        logger.info(f"CIASWorldModel initialized with database: {db_path} and {vector_db}, top_k={top_k}")
+        logger.info(f"CIASWorldModel initialized with database: {db_path} and {vector_db}")
 
     @contextmanager
     def _get_conn(self):

@@ -63,8 +63,8 @@ class CIASAnalystAgent:
 
                 current_experiments.append({
                     "experiment_id": exp.experiment_id,
-                    "config": self._to_serializable(asdict(exp.config)),
-                    "metrics": self._to_serializable(asdict(exp.metrics)),
+                    "config": self._to_serializable(exp.config.model_dump()),
+                    "metrics": self._to_serializable(exp.metrics.model_dump()),
                     "strata": strata
                 })
             elif isinstance(exp, dict):
@@ -75,7 +75,7 @@ class CIASAnalystAgent:
 
         # 3. Compute Pareto frontiers per strata with rank
         all_experiments = existing_frontiers + current_experiments
-        updated_frontiers = self._compute_stratified_pareto_with_rank(all_experiments)
+        updated_frontiers = self._compute_stratified_pareto_with_rank(all_experiments, top_k=state.get("top_k", 10))
 
         # 4. Update pareto_frontiers table
         for strata, top_configs in updated_frontiers.items():
@@ -105,12 +105,13 @@ class CIASAnalystAgent:
         self.world_model.append_plan_token_used(plan_id=latest_plan_id, token_used=analysis_used, token_type="analysis")
         self.world_model.append_plan_token_used(plan_id=latest_plan_id, token_used=token_used_design, token_type="global_summary")
 
+        new_budget = budget_remaining - len(current_experiments)
+
         token_remaining = token_remaining - analysis_used - token_used_design
         token_remaining = 0 if token_remaining <= 0 else token_remaining
         logger.info(f"Analyst Agent: Analysis complete. Budget remaining: {new_budget}. Token remaining: {token_remaining}")
 
         # Determine next status
-        new_budget = budget_remaining - len(current_experiments)
         next_status = "planning" if new_budget > 0 and token_remaining > 0 else "end"
 
         return {
@@ -133,7 +134,7 @@ class CIASAnalystAgent:
             return token_used_design
         return 0
 
-    def _compute_stratified_pareto_with_rank(self, all_experiments: List[Dict]) -> Dict[str, List[Dict]]:
+    def _compute_stratified_pareto_with_rank(self, all_experiments: List[Dict], top_k: int = 10) -> Dict[str, List[Dict]]:
         """
         Compute Pareto frontiers grouped by strata with rank.
 
@@ -155,16 +156,16 @@ class CIASAnalystAgent:
             sorted_pareto = sorted(pareto, key=lambda x: x['metrics'].get('psnr', 0), reverse=True)
 
             # Take top-k and assign rank
-            top_k = []
-            for rank, item in enumerate(sorted_pareto[:self.world_model.top_k], start=1):
-                top_k.append({
+            top_k_list = []
+            for rank, item in enumerate(sorted_pareto[:top_k], start=1):
+                top_k_list.append({
                     "experiment_id": item.get('experiment_id', 0),
                     "rank": rank,
                     "config": item['config'],
                     "metrics": item['metrics']
                 })
 
-            result[strata] = top_k
+            result[strata] = top_k_list
 
         return result
 

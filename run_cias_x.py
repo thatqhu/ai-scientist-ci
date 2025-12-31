@@ -90,7 +90,6 @@ async def run_workflow(_args):
     logger.info(f"Initializing CIAS-X with database: {config.database.path}, top_k={config.pareto.top_k}")
     world_model = CIASWorldModel(
         config.database.path,
-        top_k=config.pareto.top_k,
         vector_db=config.vector_db.path,
         vector_memory=config.vector_memory)
 
@@ -112,7 +111,9 @@ async def run_workflow(_args):
         "design_space": design_space,
         "budget_remaining": budget,
         "token_remaining": max_token,
+        "top_k": config.pareto.top_k,
         "design_id": design_id,  # Planner will initialize
+        "design_goal": config.design_goal,
         "configs": [],
         "experiments": [],
         "pareto_frontiers": [],

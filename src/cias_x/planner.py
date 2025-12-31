@@ -91,7 +91,12 @@ class CIASPlannerAgent:
             logger.info("Using LLM to generate new configs based on history.")
             historical_context = self.world_model.retrieve_relevant_experiments(design_goal.description)
             new_configs, token_used = self._llm_generate_configs(
-                global_summary, latest_plan_summary, pareto_frontiers, design_space, historical_context
+                global_summary,
+                latest_plan_summary,
+                pareto_frontiers,
+                design_space,
+                historical_context,
+                top_k=state.get("top_k", 10)
             )
 
             if not new_configs:
@@ -116,14 +121,15 @@ class CIASPlannerAgent:
         latest_plan_summary: str,
         pareto_frontiers: List[Dict],
         design_space: DesignSpace = DesignSpace(),
-        historical_context: str = ""
+        historical_context: str = "",
+        top_k: int = 10
     ) -> str:
         """Build the LLM prompt for config generation."""
         # Format frontiers with rank
         frontier_text = ""
         if pareto_frontiers:
             frontier_text = "## Current Pareto Frontiers (Best Trade-offs)\n"
-            for item in pareto_frontiers[:self.world_model.top_k]:
+            for item in pareto_frontiers[:top_k]:
                 cfg = item.get('config', {})
                 metrics = item.get('metrics', {})
                 strata = item.get('strata', 'unknown')
@@ -154,7 +160,7 @@ We retrieved similar experiments from the archives based on your current goal:
 """
         logger.info(f"Context Text: {context_text}")
         # Format design space
-        ds_text = f"## Design Space (Valid Options)\n```json\n{json.dumps(design_space, indent=2)}\n```\n"
+        ds_text = f"## Design Space (Valid Options)\n```json\n{json.dumps(design_space.model_dump(), indent=2)}\n```\n"
 
         prompt = f"""You are an AI Scientist optimizing SCI (Snapshot Compressive Imaging) reconstruction.
 
@@ -202,9 +208,10 @@ Ensure all values are from the Design Space options."""
         self,
         global_summary: str,
         latest_plan_summary: str,
-        historical_context: str,
         pareto_frontiers: List[Dict],
-        design_space: DesignSpace = DesignSpace()
+        design_space: DesignSpace = DesignSpace(),
+        historical_context: str = "",
+        top_k: int = 10
     ) -> tuple[List[SCIConfiguration], int]:
         """Use LLM to generate experiment configurations."""
         if not self.llm_client:
@@ -216,7 +223,8 @@ Ensure all values are from the Design Space options."""
             latest_plan_summary,
             pareto_frontiers,
             design_space,
-            historical_context
+            historical_context,
+            top_k
         )
 
         messages = [
